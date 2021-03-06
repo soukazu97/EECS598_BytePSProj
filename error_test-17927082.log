@@ -1,0 +1,28 @@
+[2021-03-05 23:58:41.  5920: F byteps/common/global.cc:188] Check failed: e == cudaSuccess || e == cudaErrorCudartUnloading CUDA: CUDA driver version is insufficient for CUDA runtime version
+[2021-03-05 23:58:41.  9472: F byteps/common/global.cc:188] Check failed: e == cudaSuccess || e == cudaErrorCudartUnloading CUDA: CUDA driver version is insufficient for CUDA runtime version
+[2021-03-05 23:58:41. 14044: F byteps/common/global.cc:188] Check failed: e == cudaSuccess || e == cudaErrorCudartUnloading CUDA: CUDA driver version is insufficient for CUDA runtime version
+[2021-03-05 23:58:41. 14786: F byteps/common/global.cc:188] Check failed: e == cudaSuccess || e == cudaErrorCudartUnloading CUDA: CUDA driver version is insufficient for CUDA runtime version
+Aborted (core dumped)
+Aborted (core dumped)
+Traceback (most recent call last):
+  File "/usr/local/bin/bpslaunch", line 4, in <module>
+    __import__('pkg_resources').run_script('byteps==0.2.5', 'bpslaunch')
+  File "/usr/lib/python3/dist-packages/pkg_resources/__init__.py", line 667, in run_script
+    self.require(requires)[0].run_script(script_name, ns)
+  File "/usr/lib/python3/dist-packages/pkg_resources/__init__.py", line 1463, in run_script
+    exec(code, namespace, namespace)
+  File "/usr/local/lib/python3.8/dist-packages/byteps-0.2.5-py3.8-linux-x86_64.egg/EGG-INFO/scripts/bpslaunch", line 220, in <module>
+    launch_bps()
+  File "/usr/local/lib/python3.8/dist-packages/byteps-0.2.5-py3.8-linux-x86_64.egg/EGG-INFO/scripts/bpslaunch", line 206, in launch_bps
+    t[i].join()
+  File "/usr/local/lib/python3.8/dist-packages/byteps-0.2.5-py3.8-linux-x86_64.egg/EGG-INFO/scripts/bpslaunch", line 34, in join
+    raise self.exc
+  File "/usr/local/lib/python3.8/dist-packages/byteps-0.2.5-py3.8-linux-x86_64.egg/EGG-INFO/scripts/bpslaunch", line 27, in run
+    self.ret = self._target(*self._args, **self._kwargs)
+  File "/usr/local/lib/python3.8/dist-packages/byteps-0.2.5-py3.8-linux-x86_64.egg/EGG-INFO/scripts/bpslaunch", line 176, in worker
+    subprocess.check_call(command, env=my_env,
+  File "/usr/lib/python3.8/subprocess.py", line 364, in check_call
+    raise CalledProcessError(retcode, cmd)
+subprocess.CalledProcessError: Command 'python3 /usr/local/byteps/example/pytorch/benchmark_byteps.py --model resnet50 --num-iters 1000000' returned non-zero exit status 134.
+Aborted (core dumped)
+Aborted (core dumped)
