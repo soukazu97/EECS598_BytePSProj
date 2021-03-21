@@ -1,12 +1,10 @@
 #!/bin/bash
 # The interpreter used to execute the script
 
-#“#SBATCH” directives that convey submission options:
-
-#SBATCH --job-name=test
-#SBATCH --mail-user=ivanpu@umich.edu
+#SBATCH --job-name=byteps_worker_1
+#SBATCH --mail-user=jianbinz@umich.edu
 #SBATCH --mail-type=BEGIN,END
-#SBATCH --error=/home/%u/error_%x-%j.log
+#SBATCH --error=/home/%u/errors/error_%x-%j.log
 #SBATCH --cpus-per-task=1
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -17,10 +15,12 @@
 
 # The application(s) to execute along with its input arguments and options:
 # module load cuda/10.0.130
+
+srun hostname -s
+
 module load singularity
 
-
-singularity exec --nv bytepsimage.simg /home/ivanpu/EECS598_Proj/byteps.sh
+singularity exec --nv bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/worker_1.sh
 
 /bin/hostname
 sleep 60
