@@ -14,7 +14,6 @@
 #SBATCH --output=/home/%u/%x-%j.log
 
 # The application(s) to execute along with its input arguments and options:
-# module load cuda/10.0.130
 
 srun hostname -s
 
