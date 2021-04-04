@@ -111,34 +111,84 @@ def run_ps(trainers):
     timed_log("Finish training")
 
 
-def run(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '29500'
-    options=rpc.TensorPipeRpcBackendOptions(
-        num_worker_threads=16,
-        rpc_timeout=0  # infinite timeout
-     )
-    if rank != 0:
-        rpc.init_rpc(
-            f"trainer{rank}",
-            rank=rank,
-            world_size=world_size,
-            rpc_backend_options=options
+# --------- Launcher --------------------
+if __name__ == '__main__':
+    print("============>Torch version: ", torch.__version__)
+    parser = argparse.ArgumentParser(
+        description="Parameter-Server RPC based training")
+    parser.add_argument(
+        "--world_size",
+        type=int,
+        default=4,
+        help="""Total number of participating processes. Should be the sum of
+        master node and all training nodes.""")
+    parser.add_argument(
+        "--rank",
+        type=int,
+        default=None,
+        help="Global rank of this process. Pass in 0 for master.")
+    parser.add_argument(
+        "--num_gpus",
+        type=int,
+        default=0,
+        help="""Number of GPUs to use for training, currently supports between 0
+         and 2 GPUs. Note that this argument will be passed to the parameter servers.""")
+    parser.add_argument(
+        "--master_addr",
+        type=str,
+        default="localhost",
+        help="""Address of master, will default to localhost if not provided.
+        Master must be able to accept network traffic on the address + port.""")
+    parser.add_argument(
+        "--master_port",
+        type=str,
+        default="29500",
+        help="""Port that master is listening on, will default to 29500 if not
+        provided. Master must be able to accept network traffic on the host and port.""")
+
+    args = parser.parse_args()
+    assert args.rank is not None, "must provide rank argument."
+    assert args.num_gpus <= 3, f"Only 0-2 GPUs currently supported (got {args.num_gpus})."
+    os.environ['MASTER_ADDR'] = args.master_addr
+    os.environ['MASTER_PORT'] = args.master_port
+    processes = []
+    world_size = args.world_size
+    
+    dataset = datasets.MNIST('../data', train=True, download=True, 
+                            transform=transforms.Compose([
+                                transforms.ToTensor(),
+                                transforms.Normalize((0.1307,), (0.3081,))
+                            ]))
+    if(args.rank != 0):
+        train_sampler = torch.utils.data.distributed.DistributedSampler(
+            dataset,
+            num_replicas=world_size-1,
+            rank=args.rank-1
         )
-        # trainer passively waiting for ps to kick off training iterations
+    if args.rank == 0:
+        p = mp.Process(target=run_parameter_server, args=(0, world_size))
+        p.start()
+        processes.append(p)
     else:
-        rpc.init_rpc(
-            "ps",
-            rank=rank,
-            world_size=world_size,
-            rpc_backend_options=options
-        )
-        run_ps([f"trainer{r}" for r in range(1, world_size)])
+        # Get data to train on
+        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=32, shuffle=False, sampler=train_sampler)
+        test_loader = torch.utils.data.DataLoader(
+            datasets.MNIST('../data', train=False,
+                           transform=transforms.Compose([
+                               transforms.ToTensor(),
+                               transforms.Normalize((0.1307,), (0.3081,))
+                           ])),
+            batch_size=32, shuffle=True)
+        # start training worker on this node
+        p = mp.Process(
+            target=run_worker,
+            args=(
+                args.rank,
+                world_size, args.num_gpus,
+                train_loader,
+                test_loader))
+        p.start()
+        processes.append(p)
 
-    # block until all rpcs finish
-    rpc.shutdown()
-
-
-if __name__=="__main__":
-    world_size = batch_update_size + 1
-    mp.spawn(run, args=(world_size, ), nprocs=world_size, join=True)
+    for p in processes:
+        p.join()
