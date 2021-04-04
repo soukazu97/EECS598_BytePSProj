@@ -4,6 +4,7 @@ from threading import Lock
 import time
 import logging
 import sys
+from datetime import datetime
 
 import torch
 import torch.distributed.autograd as dist_autograd
@@ -18,6 +19,9 @@ from torch import optim
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
+def timed_log(text):
+    print(f"{datetime.now().strftime('%H:%M:%S')} {text}")
+
 
 # Constants
 TRAINER_LOG_INTERVAL = 5  # How frequently to log information
@@ -69,27 +73,6 @@ class Net(nn.Module):
         # logger.info(f"Who is running this forward???  {str(self.rank)}")
         return output
 
-
-# --------- Helper Methods --------------------
-
-# On the local node, call a method with first arg as the value held by the
-# RRef. Other args are passed in as arguments to the function called.
-# Useful for calling instance methods.
-def call_method(method, rref, *args, **kwargs):
-    return method(rref.local_value(), *args, **kwargs)
-
-# Given an RRef, return the result of calling the passed in method on the value
-# held by the RRef. This call is done on the remote node that owns
-# the RRef. args and kwargs are passed into the method.
-# Example: If the value held by the RRef is of type Foo, then
-# remote_method(Foo.bar, rref, arg1, arg2) is equivalent to calling
-# <foo_instance>.bar(arg1, arg2) on the remote node and getting the result
-# back.
-def remote_method(method, rref, *args, **kwargs):
-    args = [method, rref] + list(args)
-    return rpc.rpc_sync(rref.owner(), call_method, args=args, kwargs=kwargs)
-
-
 # --------- Parameter Server --------------------
 class ParameterServer(nn.Module):
     def __init__(self, num_gpus=0, world_size=0):
@@ -126,7 +109,7 @@ class ParameterServer(nn.Module):
             if self.curr_update >= self.world_size-1:
                 # update the model
                 for p in self.model.parameters():
-                    p.grad /= self.batch_update
+                    p.grad /= (self.world_size-1)
                 self.curr_update = 0
                 self.optimizer.step()
                 self.optimizer.zero_grad()
@@ -147,7 +130,7 @@ def get_parameter_server(rank, num_gpus=0, world_size=0):
             # construct it once
             param_server = ParameterServer(num_gpus=num_gpus, world_size=world_size)
         # Add model for this rank
-        param_server.create_model_for_rank(rank, num_gpus)
+        # param_server.create_model_for_rank(rank, num_gpus)
         return param_server
             
 def run_parameter_server(rank, world_size):
@@ -176,74 +159,44 @@ class Trainer(nn.Module):
             "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
         device = torch.device("cuda:0" if num_gpus > 0
             and torch.cuda.is_available() else "cpu")
-        self.model = self.param_server_rref.rpc_sync().get_model().cuda()
+        self.model = self.param_server_rref.rpc_sync().get_model()
         self.model = self.model.to(device)
-
-    def get_global_param_rrefs(self):
-        remote_params = self.param_server_rref.rpc_sync().get_param_rrefs(self.rank)
-        return remote_params
-    
-    def send_local_gradients(self,cid):
-        local_grads = dist_autograd.get_gradients(cid)
-        # This output is forwarded over RPC, which as of 1.5.0 only accepts CPU tensors.
-        # Tensors must be moved in and out of GPU memory due to this.
-        cpu_grads = {}
-        for k, v in grads.items():
-            k_cpu, v_cpu = k.to("cpu"), v.to("cpu")
-            cpu_grads[k_cpu] = v_cpu
-        return cpu_grads
-
-    def forward(self, x):
-        model_output = self.param_server_rref.rpc_sync().forward(self.rank, x)
-        # x = x.to("cuda:0")
-        # model_weight = self.param_server_rref.rpc_sync().get_param(self.rank)
-        # gpu_weight = {}
-        # for k, v in model_weight.items():
-        #     v_cpu = v.to("cuda:0")
-        #     gpu_weight[k] = v_cpu
-        # self.model.load_state_dict(gpu_weight)        
-        # model_output = self.model(x)
-        return model_output
-    
-    def average_model_across_trainers(self):
-        self.param_server_rref.rpc_sync().average_models(self.rank)
 
 def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
     # Runs the typical neural network forward + backward + optimizer step, but
     # in a distributed fashion.
-    net = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
-    # Wait for all nets on PS to be created, otherwise we could run
-    # into race conditions during training.
-    num_created = net.param_server_rref.rpc_sync().get_num_models()
-    while num_created != world_size - 1:
-        time.sleep(0.5)
-        num_created = net.param_server_rref.rpc_sync().get_num_models()
+    trainer = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
+    name = rpc.get_worker_info().name
     # Build DistributedOptimizer.
-    param_rrefs = net.get_global_param_rrefs()
+    # param_rrefs = net.get_global_param_rrefs()
     logger.info(f"Number of batchs {len(train_loader)}")
     for i, (data, target) in enumerate(train_loader):
         if TERMINATE_AT_ITER is not None and i == TERMINATE_AT_ITER:
             break
-        if i % PS_AVERAGE_EVERY_N == 0:
-            # Request server to update model with average params across all
-            # trainers.
-            logger.info(f"Rank {rank} averaging model across all trainers.")
-            net.average_model_across_trainers()
-        # with dist_autograd.context() as cid:
-            model_output = net(data)
-            target = target.to(model_output.device)
-            loss = F.nll_loss(model_output, target)
-            if i % TRAINER_LOG_INTERVAL == 0:
-                logger.info(f"Rank {rank} training batch {i} loss {loss.item()}")
-            dist_autograd.backward(cid, [loss])
-            # Ensure that dist autograd ran successfully and gradients were
-            # returned.
-            assert net.param_server_rref.rpc_sync().get_dist_gradients(cid) != {}
-            opt.step(cid)
+        model_output = trainer.model(data)
+        target = target.to(model_output.device)
+        loss = F.nll_loss(model_output, target)
+        if i % TRAINER_LOG_INTERVAL == 0:
+            logger.info(f"Rank {rank} training batch {i} loss {loss.item()}")
+        loss.backward()
+        trainer.model = rpc.rpc_sync(
+                trainer.param_server_rref.owner(),
+                ParameterServer.update_and_fetch_model,
+                args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
+        )
+        device = torch.device("cuda:0" if num_gpus > 0
+            and torch.cuda.is_available() else "cpu")
+        trainer.model = trainer.model.to(device)
+
+        timed_log(f"{name} got updated model")
+        # Ensure that dist autograd ran successfully and gradients were
+        # returned.
+        # assert net.param_server_rref.rpc_sync().get_dist_gradients(cid) != {}
+        # opt.step(cid)
 
     logger.info("Training complete!")
     logger.info("Getting accuracy....")
-    get_accuracy(test_loader, net)
+    get_accuracy(test_loader, trainer.model)
 
 
 def get_accuracy(test_loader, model):
