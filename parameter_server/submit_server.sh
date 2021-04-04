@@ -23,6 +23,6 @@ module load singularity
 
 # Run the server node
 singularity exec --nv /home/$(username)/EECS598_BytePSProj/psimage.simg \
-python3 /home/$(username)/EECS598_BytePSProj/parameter_server/rpc_parameter_server.py --world_size=3 --rank=0 \
+python3 /home/$(username)/EECS598_BytePSProj/parameter_server/another_ps.py --world_size=3 --rank=0 \
 --num_gpus=1 --master_addr=$(target_node) --master_port=7214 
 

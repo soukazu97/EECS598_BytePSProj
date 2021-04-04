@@ -1,0 +1,8 @@
+gl1012
+============>Torch version:  1.8.0
+INFO:root:PS master initializing RPC
+INFO:root:RPC initialized! Running parameter server...
+INFO:root:Using 1 GPUs to train
+INFO:root:Putting first 2 convs on cpu
+INFO:root:Putting rest of layers on cpu
+INFO:root:RPC shutdown on parameter server.

@@ -167,12 +167,15 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
     # in a distributed fashion.
     trainer = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
     name = rpc.get_worker_info().name
+    device = torch.device("cuda:0" if num_gpus > 0
+        and torch.cuda.is_available() else "cpu")
     # Build DistributedOptimizer.
     # param_rrefs = net.get_global_param_rrefs()
     logger.info(f"Number of batchs {len(train_loader)}")
     for i, (data, target) in enumerate(train_loader):
         if TERMINATE_AT_ITER is not None and i == TERMINATE_AT_ITER:
             break
+        data = data.to(device)
         model_output = trainer.model(data)
         target = target.to(model_output.device)
         loss = F.nll_loss(model_output, target)
@@ -184,8 +187,6 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
                 ParameterServer.update_and_fetch_model,
                 args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
         )
-        device = torch.device("cuda:0" if num_gpus > 0
-            and torch.cuda.is_available() else "cpu")
         trainer.model = trainer.model.to(device)
 
         timed_log(f"{name} got updated model")
@@ -207,6 +208,7 @@ def get_accuracy(test_loader, model):
         and torch.cuda.is_available() else "cpu")
     with torch.no_grad():
         for i, (data, target) in enumerate(test_loader):
+            data = data.to(device)
             out = model(data)
             pred = out.argmax(dim=1, keepdim=True)
             pred, target = pred.to(device), target.to(device)

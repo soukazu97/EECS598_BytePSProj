@@ -13,7 +13,7 @@
 #SBATCH --mem-per-cpu=32768m 
 #SBATCH --partition=gpu
 #SBATCH --output=/home/%u/EECS598_BytePSProj/parameter_server/output/%x-%j.log
-#SBATCH --nodelist=gl1014
+#SBATCH --nodelist=gl1015
 
 # The application(s) to execute along with its input arguments and options:
 
@@ -23,6 +23,6 @@ module load singularity
 
 # Run the server node
 singularity exec --nv /home/zwq/EECS598_BytePSProj/psimage.simg \
-python3 /home/zwq/EECS598_BytePSProj/parameter_server/rpc_parameter_server.py --world_size=3 --rank=2 \
---num_gpus=1 --master_addr=gl1010 --master_port=7214 
+python3 /home/zwq/EECS598_BytePSProj/parameter_server/another_ps.py --world_size=3 --rank=2 \
+--num_gpus=1 --master_addr=gl1012 --master_port=7214 
 
