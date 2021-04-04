@@ -27,9 +27,10 @@ PS_AVERAGE_EVERY_N = 25  # How often to average models between trainers
 
 
 class Net(nn.Module):
-    def __init__(self, num_gpus=0):
+    def __init__(self, num_gpus=0, rank=0):
         super(Net, self).__init__()
         logger.info(f"Using {num_gpus} GPUs to train")
+        self.rank = rank
         self.num_gpus = num_gpus
         device = torch.device(
             "cuda:0" if torch.cuda.is_available() and self.num_gpus > 0 else "cpu")
@@ -64,6 +65,7 @@ class Net(nn.Module):
         x = self.dropout2(x)
         x = self.fc2(x)
         output = F.log_softmax(x, dim=1)
+        logger.info(f"Who is running this forward???  {str(self.rank)}")
         return output
 
 
@@ -82,8 +84,6 @@ def call_method(method, rref, *args, **kwargs):
 # remote_method(Foo.bar, rref, arg1, arg2) is equivalent to calling
 # <foo_instance>.bar(arg1, arg2) on the remote node and getting the result
 # back.
-
-
 def remote_method(method, rref, *args, **kwargs):
     args = [method, rref] + list(args)
     return rpc.rpc_sync(rref.owner(), call_method, args=args, kwargs=kwargs)
@@ -91,10 +91,12 @@ def remote_method(method, rref, *args, **kwargs):
 
 # --------- Parameter Server --------------------
 class ParameterServer(nn.Module):
-    def __init__(self, num_gpus=0):
+    def __init__(self, num_gpus=0, world_size=0):
         super().__init__()
         self.num_gpus = num_gpus
+        self.world_size = world_size
         self.models = {}
+        # self.trainer_rrefs = make_trainer_rrefs(num_gpus, world_size)
         # This lock is only used during init, and does not
         # impact training perf.
         self.models_init_lock = Lock()
@@ -132,7 +134,7 @@ class ParameterServer(nn.Module):
         assert num_gpus == self.num_gpus, f"Inconsistent no. of GPUs requested from rank vs initialized with on PS: {num_gpus} vs {self.num_gpus}"
         with self.models_init_lock:
             if rank not in self.models:
-                self.models[rank] = Net(num_gpus=num_gpus)
+                self.models[rank] = Net(num_gpus=num_gpus, rank=rank)
 
     def get_num_models(self):
         with self.models_init_lock:
@@ -147,23 +149,41 @@ class ParameterServer(nn.Module):
                                            key] for r in self.models) / len(self.models)
         # Rewrite back state dict
         self.models[rank].load_state_dict(state_dict_for_rank)
+    
+    def get_param(self, rank):
+        model_weight = self.models[rank].state_dict()
+        cpu_weight = {}
+        for k, v in model_weight.items():
+            v_cpu = v.to("cpu")
+            cpu_weight[k] = v_cpu
+        return cpu_weight
 
 param_server = None
 global_lock = Lock()
-
-
-def get_parameter_server(rank, num_gpus=0):
+def get_parameter_server(rank, num_gpus=0, world_size=0):
     global param_server
     # Ensure that we get only one handle to the ParameterServer.
     with global_lock:
         if not param_server:
             # construct it once
-            param_server = ParameterServer(num_gpus=num_gpus)
+            param_server = ParameterServer(num_gpus=num_gpus, world_size=world_size)
         # Add model for this rank
         param_server.create_model_for_rank(rank, num_gpus)
         return param_server
 
+# def get_trainer(num_gpus=0, world_size=0):
+#     trainer = TrainerNet(num_gpus=num_gpus, world_size=world_size)
+#     return trainer
 
+# def make_trainer_rrefs(num_gpus=0, world_size=0):
+#     trainer_rrefs=[]
+#     rank = 1
+#     for trainer in trainers:
+#         trainer_rref = rpc.remote(
+#                        f"trainer_{rank}", get_trainer, args=(num_gpus, world_size))
+#         trainer_rrefs.append(trainer_rref)
+#     return trainer_rrefs
+            
 def run_parameter_server(rank, world_size):
     # The parameter server just acts as a host for the model and responds to
     # requests from trainers, hence it does not need to run a loop.
@@ -178,23 +198,45 @@ def run_parameter_server(rank, world_size):
 
 
 # --------- Trainers --------------------
-
 # nn.Module corresponding to the network trained by this trainer. The
 # forward() method simply invokes the network on the given parameter
 # server.
 class TrainerNet(nn.Module):
-    def __init__(self, rank, num_gpus=0,):
+    def __init__(self, rank, num_gpus=0, world_size=0):
         super().__init__()
         self.num_gpus = num_gpus
         self.rank = rank
         self.param_server_rref = rpc.remote(
-            "parameter_server", get_parameter_server, args=(self.rank, num_gpus,))
+            "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
+        device = torch.device("cuda:0" if num_gpus > 0
+            and torch.cuda.is_available() else "cpu")
+        self.model = Net(num_gpus=num_gpus, rank=rank)
+        self.model = self.model.to(device)
+
     def get_global_param_rrefs(self):
         remote_params = self.param_server_rref.rpc_sync().get_param_rrefs(self.rank)
         return remote_params
+    
+    def send_local_gradients(self,cid):
+        local_grads = dist_autograd.get_gradients(cid)
+        # This output is forwarded over RPC, which as of 1.5.0 only accepts CPU tensors.
+        # Tensors must be moved in and out of GPU memory due to this.
+        cpu_grads = {}
+        for k, v in grads.items():
+            k_cpu, v_cpu = k.to("cpu"), v.to("cpu")
+            cpu_grads[k_cpu] = v_cpu
+        return cpu_grads
 
     def forward(self, x):
         model_output = self.param_server_rref.rpc_sync().forward(self.rank, x)
+        # x = x.to("cuda:0")
+        # model_weight = self.param_server_rref.rpc_sync().get_param(self.rank)
+        # gpu_weight = {}
+        # for k, v in model_weight.items():
+        #     v_cpu = v.to("cuda:0")
+        #     gpu_weight[k] = v_cpu
+        # self.model.load_state_dict(gpu_weight)        
+        # model_output = self.model(x)
         return model_output
     
     def average_model_across_trainers(self):
@@ -203,7 +245,7 @@ class TrainerNet(nn.Module):
 def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
     # Runs the typical neural network forward + backward + optimizer step, but
     # in a distributed fashion.
-    net = TrainerNet(rank=rank, num_gpus=num_gpus)
+    net = TrainerNet(rank=rank, num_gpus=num_gpus, world_size=world_size)
     # Wait for all nets on PS to be created, otherwise we could run
     # into race conditions during training.
     num_created = net.param_server_rref.rpc_sync().get_num_models()
@@ -271,6 +313,7 @@ def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
 
 
 if __name__ == '__main__':
+    print("============>Torch version: ", torch.__version__)
     parser = argparse.ArgumentParser(
         description="Parameter-Server RPC based training")
     parser.add_argument(
