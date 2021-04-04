@@ -1,37 +1,106 @@
+import argparse
 import os
-import threading
-from datetime import datetime
+from threading import Lock
+import time
+import logging
+import sys
 
 import torch
+import torch.distributed.autograd as dist_autograd
 import torch.distributed.rpc as rpc
 import torch.multiprocessing as mp
 import torch.nn as nn
+import torch.nn.functional as F
+from torch import optim
+from torch.distributed.optim import DistributedOptimizer
+from torchvision import datasets, transforms
 from torch import optim
 
-import torchvision
+logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+logger = logging.getLogger()
+
+# Constants
+TRAINER_LOG_INTERVAL = 5  # How frequently to log information
+TERMINATE_AT_ITER = 1e10  # for early stopping when debugging
+PS_AVERAGE_EVERY_N = 25  # How often to average models between trainers
+
+# --------- MNIST Network to train, from pytorch/examples -----
 
 
-batch_size = 20
-image_w = 64
-image_h = 64
-num_classes = 30
-batch_update_size = 5
-num_batches = 6
+class Net(nn.Module):
+    def __init__(self, num_gpus=0):
+        super(Net, self).__init__()
+        logger.info(f"Using {num_gpus} GPUs to train")
+        self.num_gpus = num_gpus
+        # device = torch.device(
+        #     "cuda:0" if (torch.cuda.is_available() and self.num_gpus > 0) else "cpu")
+        device = torch.device("cpu")
+        logger.info(f"Putting first 2 convs on {str(device)}")
+        # Put conv layers on the first cuda device
+        self.conv1 = nn.Conv2d(1, 32, 3, 1).to(device)
+        self.conv2 = nn.Conv2d(32, 64, 3, 1).to(device)
+        # Put rest of the network on the 2nd cuda device, if there is one
+        if "cuda" in str(device) and num_gpus > 1:
+            device = torch.device("cuda:1")
+
+        logger.info(f"Putting rest of layers on {str(device)}")
+        self.dropout1 = nn.Dropout2d(0.25).to(device)
+        self.dropout2 = nn.Dropout2d(0.5).to(device)
+        self.fc1 = nn.Linear(9216, 128).to(device)
+        self.fc2 = nn.Linear(128, 10).to(device)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = F.relu(x)
+        x = self.conv2(x)
+        x = F.max_pool2d(x, 2)
+
+        x = self.dropout1(x)
+        x = torch.flatten(x, 1)
+        # Move tensor to next device if necessary
+        next_device = next(self.fc1.parameters()).device
+        x = x.to(next_device)
+
+        x = self.fc1(x)
+        x = F.relu(x)
+        x = self.dropout2(x)
+        x = self.fc2(x)
+        output = F.log_softmax(x, dim=1)
+        # logger.info(f"Who is running this forward???  {str(self.rank)}")
+        return output
 
 
-def timed_log(text):
-    print(f"{datetime.now().strftime('%H:%M:%S')} {text}")
+# --------- Helper Methods --------------------
+
+# On the local node, call a method with first arg as the value held by the
+# RRef. Other args are passed in as arguments to the function called.
+# Useful for calling instance methods.
+def call_method(method, rref, *args, **kwargs):
+    return method(rref.local_value(), *args, **kwargs)
+
+# Given an RRef, return the result of calling the passed in method on the value
+# held by the RRef. This call is done on the remote node that owns
+# the RRef. args and kwargs are passed into the method.
+# Example: If the value held by the RRef is of type Foo, then
+# remote_method(Foo.bar, rref, arg1, arg2) is equivalent to calling
+# <foo_instance>.bar(arg1, arg2) on the remote node and getting the result
+# back.
+def remote_method(method, rref, *args, **kwargs):
+    args = [method, rref] + list(args)
+    return rpc.rpc_sync(rref.owner(), call_method, args=args, kwargs=kwargs)
 
 
-class BatchUpdateParameterServer(object):
-
-    def __init__(self, batch_update_size=batch_update_size):
-        self.model = torchvision.models.resnet50(num_classes=num_classes)
-        self.lock = threading.Lock()
+# --------- Parameter Server --------------------
+class ParameterServer(nn.Module):
+    def __init__(self, num_gpus=0, world_size=0):
+        super().__init__()
+        self.num_gpus = num_gpus
+        self.world_size = world_size
+        self.model = Net(num_gpus)
+        self.curr_update = 0
         self.future_model = torch.futures.Future()
-        self.batch_update_size = batch_update_size
-        self.curr_update_size = 0
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.001, momentum=0.9)
+        self.lock = Lock()
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.03, momentum=0.9)
         for p in self.model.parameters():
             p.grad = torch.zeros_like(p)
 
@@ -41,77 +110,173 @@ class BatchUpdateParameterServer(object):
     @staticmethod
     @rpc.functions.async_execution
     def update_and_fetch_model(ps_rref, grads):
+        # Using the RRef to retrieve the local PS instance
         self = ps_rref.local_value()
-        timed_log(f"PS got {self.curr_update_size}/{batch_update_size} updates")
-        for p, g in zip(self.model.parameters(), grads):
-            p.grad += g
         with self.lock:
-            self.curr_update_size += 1
+            self.curr_update += 1
+            # accumulate gradients into .grad field
+            for p, g in zip(self.model.parameters(), grads):
+                p.grad += g
+
+            # Save the current future_model and return it to make sure the
+            # returned Future object holds the correct model even if another
+            # thread modifies future_model before this thread returns.
             fut = self.future_model
 
-            if self.curr_update_size >= self.batch_update_size:
+            if self.curr_update >= self.world_size-1:
+                # update the model
                 for p in self.model.parameters():
-                    p.grad /= self.batch_update_size
-                self.curr_update_size = 0
+                    p.grad /= self.batch_update
+                self.curr_update = 0
                 self.optimizer.step()
                 self.optimizer.zero_grad()
+                # by settiing the result on the Future object, all previous
+                # requests expecting this updated model will be notified and
+                # the their responses will be sent accordingly.
                 fut.set_result(self.model)
-                timed_log("PS updated model")
                 self.future_model = torch.futures.Future()
-
         return fut
 
-
-class Trainer(object):
-
-    def __init__(self, ps_rref):
-        self.ps_rref = ps_rref
-        self.loss_fn = nn.MSELoss()
-        self.one_hot_indices = torch.LongTensor(batch_size) \
-                                    .random_(0, num_classes) \
-                                    .view(batch_size, 1)
-
-    def get_next_batch(self):
-        for _ in range(num_batches):
-            inputs = torch.randn(batch_size, 3, image_w, image_h)
-            labels = torch.zeros(batch_size, num_classes) \
-                        .scatter_(1, self.one_hot_indices, 1)
-            yield inputs.cuda(), labels.cuda()
-
-    def train(self):
-        name = rpc.get_worker_info().name
-        m = self.ps_rref.rpc_sync().get_model().cuda()
-        for inputs, labels in self.get_next_batch():
-            timed_log(f"{name} processing one batch")
-            self.loss_fn(m(inputs), labels).backward()
-            timed_log(f"{name} reporting grads")
-            m = rpc.rpc_sync(
-                self.ps_rref.owner(),
-                BatchUpdateParameterServer.update_and_fetch_model,
-                args=(self.ps_rref, [p.grad for p in m.cpu().parameters()]),
-            ).cuda()
-            timed_log(f"{name} got updated model")
+param_server = None
+global_lock = Lock()
+def get_parameter_server(rank, num_gpus=0, world_size=0):
+    global param_server
+    # Ensure that we get only one handle to the ParameterServer.
+    with global_lock:
+        if not param_server:
+            # construct it once
+            param_server = ParameterServer(num_gpus=num_gpus, world_size=world_size)
+        # Add model for this rank
+        param_server.create_model_for_rank(rank, num_gpus)
+        return param_server
+            
+def run_parameter_server(rank, world_size):
+    # The parameter server just acts as a host for the model and responds to
+    # requests from trainers, hence it does not need to run a loop.
+    # rpc.shutdown() will wait for all workers to complete by default, which
+    # in this case means that the parameter server will wait for all trainers
+    # to complete, and then exit.
+    logger.info("PS master initializing RPC")
+    rpc.init_rpc(name="parameter_server", rank=rank, world_size=world_size)
+    logger.info("RPC initialized! Running parameter server...")
+    rpc.shutdown()
+    logger.info("RPC shutdown on parameter server.")
 
 
-def run_trainer(ps_rref):
-    trainer = Trainer(ps_rref)
-    trainer.train()
+# --------- Trainers --------------------
+# nn.Module corresponding to the network trained by this trainer. The
+# forward() method simply invokes the network on the given parameter
+# server.
+class Trainer(nn.Module):
+    def __init__(self, rank, num_gpus=0, world_size=0):
+        super().__init__()
+        self.num_gpus = num_gpus
+        self.rank = rank
+        self.param_server_rref = rpc.remote(
+            "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
+        device = torch.device("cuda:0" if num_gpus > 0
+            and torch.cuda.is_available() else "cpu")
+        self.model = self.param_server_rref.rpc_sync().get_model().cuda()
+        self.model = self.model.to(device)
+
+    def get_global_param_rrefs(self):
+        remote_params = self.param_server_rref.rpc_sync().get_param_rrefs(self.rank)
+        return remote_params
+    
+    def send_local_gradients(self,cid):
+        local_grads = dist_autograd.get_gradients(cid)
+        # This output is forwarded over RPC, which as of 1.5.0 only accepts CPU tensors.
+        # Tensors must be moved in and out of GPU memory due to this.
+        cpu_grads = {}
+        for k, v in grads.items():
+            k_cpu, v_cpu = k.to("cpu"), v.to("cpu")
+            cpu_grads[k_cpu] = v_cpu
+        return cpu_grads
+
+    def forward(self, x):
+        model_output = self.param_server_rref.rpc_sync().forward(self.rank, x)
+        # x = x.to("cuda:0")
+        # model_weight = self.param_server_rref.rpc_sync().get_param(self.rank)
+        # gpu_weight = {}
+        # for k, v in model_weight.items():
+        #     v_cpu = v.to("cuda:0")
+        #     gpu_weight[k] = v_cpu
+        # self.model.load_state_dict(gpu_weight)        
+        # model_output = self.model(x)
+        return model_output
+    
+    def average_model_across_trainers(self):
+        self.param_server_rref.rpc_sync().average_models(self.rank)
+
+def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
+    # Runs the typical neural network forward + backward + optimizer step, but
+    # in a distributed fashion.
+    net = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
+    # Wait for all nets on PS to be created, otherwise we could run
+    # into race conditions during training.
+    num_created = net.param_server_rref.rpc_sync().get_num_models()
+    while num_created != world_size - 1:
+        time.sleep(0.5)
+        num_created = net.param_server_rref.rpc_sync().get_num_models()
+    # Build DistributedOptimizer.
+    param_rrefs = net.get_global_param_rrefs()
+    logger.info(f"Number of batchs {len(train_loader)}")
+    for i, (data, target) in enumerate(train_loader):
+        if TERMINATE_AT_ITER is not None and i == TERMINATE_AT_ITER:
+            break
+        if i % PS_AVERAGE_EVERY_N == 0:
+            # Request server to update model with average params across all
+            # trainers.
+            logger.info(f"Rank {rank} averaging model across all trainers.")
+            net.average_model_across_trainers()
+        # with dist_autograd.context() as cid:
+            model_output = net(data)
+            target = target.to(model_output.device)
+            loss = F.nll_loss(model_output, target)
+            if i % TRAINER_LOG_INTERVAL == 0:
+                logger.info(f"Rank {rank} training batch {i} loss {loss.item()}")
+            dist_autograd.backward(cid, [loss])
+            # Ensure that dist autograd ran successfully and gradients were
+            # returned.
+            assert net.param_server_rref.rpc_sync().get_dist_gradients(cid) != {}
+            opt.step(cid)
+
+    logger.info("Training complete!")
+    logger.info("Getting accuracy....")
+    get_accuracy(test_loader, net)
 
 
-def run_ps(trainers):
-    timed_log("Start training")
-    ps_rref = rpc.RRef(BatchUpdateParameterServer())
-    futs = []
-    for trainer in trainers:
-        futs.append(
-            rpc.rpc_async(trainer, run_trainer, args=(ps_rref,))
-        )
+def get_accuracy(test_loader, model):
+    model.eval()
+    correct_sum = 0
+    # Use GPU to evaluate if possible
+    device = torch.device("cuda:0" if model.num_gpus > 0
+        and torch.cuda.is_available() else "cpu")
+    with torch.no_grad():
+        for i, (data, target) in enumerate(test_loader):
+            out = model(data)
+            pred = out.argmax(dim=1, keepdim=True)
+            pred, target = pred.to(device), target.to(device)
+            correct = pred.eq(target.view_as(pred)).sum().item()
+            correct_sum += correct
 
-    torch.futures.wait_all(futs)
-    timed_log("Finish training")
+    logger.info(f"Accuracy {correct_sum / len(test_loader.dataset)}")
 
+# Main loop for trainers.
+def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
+    logger.info(f"Worker rank {rank} initializing RPC")    
+    rpc.init_rpc(
+        name=f"trainer_{rank}",
+        rank=rank,
+        world_size=world_size)
+
+    logger.info(f"Worker {rank} done initializing RPC")
+    run_training_loop(rank, world_size, num_gpus, train_loader, test_loader)
+    rpc.shutdown()
 
 # --------- Launcher --------------------
+
+
 if __name__ == '__main__':
     print("============>Torch version: ", torch.__version__)
     parser = argparse.ArgumentParser(
