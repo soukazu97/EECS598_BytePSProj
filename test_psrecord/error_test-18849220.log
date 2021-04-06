@@ -1,0 +1,22 @@
+Performance Reports: This version of Arm Performance Reports is over a year old.
+Performance Reports: Arm only provide support for the most recent version of Arm Performance Reports.
+Performance Reports: Please consider upgrading.
+
+============================================================
+The Allinea Sampler cannot be used with programs that make use of the
+SIGPROF signal (e.g. programs compiled with -pg).
+The current SIGPROF signal handler is /opt/singularity/3.6.4/bin/singularity(runtime.cgoSigtramp+0) [0x55555610eff0]
+============================================================
+
+Performance Reports: Process 0: 
+Performance Reports: 
+Performance Reports: Allinea Sampler failed initialisation with code 4
+Performance Reports: 
+Performance Reports: The Allinea Sampler cannot be used with programs that make use of the SIGPROF signal (e.g. programs compiled with -pg). The current SIGPROF signal handler is /opt/singularity/3.6.4/bin/singularity(runtime.cgoSigtramp+0) [0x55555610eff0] 
+Performance Reports: 
+Performance Reports: Allinea Sampler failed initialisation with code 4
+Performance Reports: 
+Performance Reports: The Allinea Sampler cannot be used with programs that make use of the
+Performance Reports: SIGPROF signal (e.g. programs compiled with -pg).
+Performance Reports: The current SIGPROF signal handler is /opt/singularity/3.6.4/bin/singularity(runtime.cgoSigtramp+0) [0x55555610eff0]
+Performance Reports: 
