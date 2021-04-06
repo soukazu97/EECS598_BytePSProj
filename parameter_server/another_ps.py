@@ -39,15 +39,10 @@ class Net(nn.Module):
         # device = torch.device(
         #     "cuda:0" if (torch.cuda.is_available() and self.num_gpus > 0) else "cpu")
         device = torch.device("cpu")
-        logger.info(f"Putting first 2 convs on {str(device)}")
+        logger.info(f"Putting model on {str(device)}")
         # Put conv layers on the first cuda device
         self.conv1 = nn.Conv2d(1, 32, 3, 1).to(device)
         self.conv2 = nn.Conv2d(32, 64, 3, 1).to(device)
-        # Put rest of the network on the 2nd cuda device, if there is one
-        if "cuda" in str(device) and num_gpus > 1:
-            device = torch.device("cuda:1")
-
-        logger.info(f"Putting rest of layers on {str(device)}")
         self.dropout1 = nn.Dropout2d(0.25).to(device)
         self.dropout2 = nn.Dropout2d(0.5).to(device)
         self.fc1 = nn.Linear(9216, 128).to(device)
@@ -113,9 +108,9 @@ class ParameterServer(nn.Module):
                 self.curr_update = 0
                 self.optimizer.step()
                 self.optimizer.zero_grad()
-                # by settiing the result on the Future object, all previous
+                # by setting the result on the Future object, all previous
                 # requests expecting this updated model will be notified and
-                # the their responses will be sent accordingly.
+                # their responses will be sent accordingly.
                 fut.set_result(self.model)
                 self.future_model = torch.futures.Future()
         return fut

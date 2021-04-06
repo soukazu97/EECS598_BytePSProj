@@ -29,27 +29,47 @@ output = o.decode('ascii')
 print(output)
 
 # Find the idle gpu machines
-output = output[output.find('idle'):].strip()  # idle gl[number, number-number]
-output = output[output.find('['):]  # [number, number-number]
-output = output[1:-1]  # number, number-number
+output_idle = output[output.find('idle'):].strip()  # idle gl[number, number-number]
+output_idle = output_idle[output_idle.find('['):]  # [number, number-number]
+output_idle = output_idle[1:-1]  # number, number-number
 
-candidates = []
-# Check if there are enough idle gpu machines
-if len(output) == 0:
-    print("There are not enough idle gpu machines!")
-    exit(1)
+candidates = set()
+# # Check if there are enough idle gpu machines
+# if len(output_idle) == 0:
+#     print("There are not enough idle gpu machines!")
+#     exit(1)
 
-entries = output.split(',')
+entries = output_idle.split(',')
 for each in entries:
+    print(each)
     if '-' in each:
         begin, end = each.split('-')
         print(begin, end)
         for num in range(int(begin), int(end)):
             if (num!=1017):
-                candidates.append("gl" + str(num))
+                candidates.add("gl" + str(num))
     else:
         if (each!="1017"):
-            candidates.append("gl" + each)
+            candidates.add("gl" + each)
+
+if (len(candidates) < 3):
+    # Find the mix gpu machines
+    output_mix = output[output.find('mix'):].strip()  # mix gl[number, number-number]
+    output_mix = output_mix[output_mix.find('['):]  # [number, number-number]
+    output_mix = output_mix.split('\n')[0][1:-1]  # number, number-number
+    entries = output_mix.split(',')
+    for each in entries:
+        print(each)
+        if each[-1]==']':
+            each = each[:-2]
+        if '-' in each:
+            begin, end = each.split('-')
+            print(begin, end)
+            for num in range(int(begin), int(end)):
+                candidates.add("gl" + str(num))
+        else:
+            candidates.add("gl" + each)
+
 first_idle_node, second_idle_node, third_idle_node = sorted(random.sample(candidates, 3))
 
 print("Found three idle gpu machine nodes: {}, {}, {}\n".format(
