@@ -8,8 +8,8 @@ first_worker_file_name = 'temp_submit_worker_0.sh'
 second_worker_file_name = 'temp_submit_worker_1.sh'
 
 # Delete output from previous run
-os.system('rm -rf errors/*')
-os.system('rm -rf output/*')
+os.system('rm -rf ../errors/*')
+os.system('rm -rf ../output/*')
 
 # Delete exsiting submit submit scripts
 os.system('rm ' + first_worker_file_name)
