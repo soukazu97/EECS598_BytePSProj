@@ -23,6 +23,6 @@ module load singularity
 
 # Run the server node
 singularity exec --nv /home/zwq/EECS598_BytePSProj/psimage.simg \
-python3 /home/zwq/EECS598_BytePSProj/parameter_server/ps_RESNET50.py --world_size=3 --rank=2 \
---num_gpus=1 --master_addr=gl1007 --master_port=7214 
+python3 /home/zwq/EECS598_BytePSProj/parameter_server/ps_MNIST.py --world_size=3 --rank=2 \
+--num_gpus=1 --master_addr=gl1005 --master_port=7214 
 
