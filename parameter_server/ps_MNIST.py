@@ -16,6 +16,7 @@ from torch import optim
 from torch.distributed.optim import DistributedOptimizer
 from torchvision import datasets, transforms
 from torch import optim
+import math
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
@@ -40,7 +41,6 @@ class Net(nn.Module):
         #     "cuda:0" if (torch.cuda.is_available() and self.num_gpus > 0) else "cpu")
         device = torch.device("cpu")
         logger.info(f"Putting model on {str(device)}")
-        # Put conv layers on the first cuda device
         self.conv1 = nn.Conv2d(1, 32, 3, 1).to(device)
         self.conv2 = nn.Conv2d(32, 64, 3, 1).to(device)
         self.dropout1 = nn.Dropout2d(0.25).to(device)
@@ -49,6 +49,7 @@ class Net(nn.Module):
         self.fc2 = nn.Linear(128, 10).to(device)
 
     def forward(self, x):
+        input_size = x.size()
         x = self.conv1(x)
         x = F.relu(x)
         x = self.conv2(x)
@@ -56,9 +57,6 @@ class Net(nn.Module):
 
         x = self.dropout1(x)
         x = torch.flatten(x, 1)
-        # Move tensor to next device if necessary
-        next_device = next(self.fc1.parameters()).device
-        x = x.to(next_device)
 
         x = self.fc1(x)
         x = F.relu(x)
@@ -66,6 +64,7 @@ class Net(nn.Module):
         x = self.fc2(x)
         output = F.log_softmax(x, dim=1)
         # logger.info(f"Who is running this forward???  {str(self.rank)}")
+        # logger.info(f"In Model: input size {input_size} output size {output.size()}")
         return output
 
 # --------- Parameter Server --------------------
@@ -113,6 +112,7 @@ class ParameterServer(nn.Module):
                 # their responses will be sent accordingly.
                 fut.set_result(self.model)
                 self.future_model = torch.futures.Future()
+        logger.info("Return updated models to trainers.")
         return fut
 
 param_server = None
@@ -154,9 +154,12 @@ class Trainer(nn.Module):
         self.rank = rank
         self.param_server_rref = rpc.remote(
             "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
-        device = torch.device("cuda:0" if num_gpus > 0
+        device = torch.device("cuda" if num_gpus > 0
             and torch.cuda.is_available() else "cpu")
         self.model = self.param_server_rref.rpc_sync(timeout=86400).get_model()
+        if torch.cuda.device_count() > 1:
+            # logger.info("Wrap model into DataParallel!")
+            self.model = nn.DataParallel(self.model,device_ids=[0,1])
         self.model = self.model.to(device)
 
 def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
@@ -164,7 +167,7 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
     # in a distributed fashion.
     trainer = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
     name = rpc.get_worker_info().name
-    device = torch.device("cuda:0" if num_gpus > 0
+    device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
     # Build DistributedOptimizer.
     # param_rrefs = net.get_global_param_rrefs()
@@ -174,6 +177,7 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
             break
         data = data.to(device)
         model_output = trainer.model(data)
+        # logger.info(f"Out Model: input size {data.size()} output size {model_output.size()}")
         target = target.to(model_output.device)
         loss = F.nll_loss(model_output, target)
         if i % TRAINER_LOG_INTERVAL == 0:
@@ -185,6 +189,9 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
                 args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
                 timeout=86400
         )
+        if torch.cuda.device_count() > 1:
+            # logger.info("Wrap model into DataParallel!")
+            trainer.model = nn.DataParallel(trainer.model,device_ids=[0,1])
         trainer.model = trainer.model.to(device)
 
         timed_log(f"{name} got updated model")
@@ -195,14 +202,14 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
 
     logger.info("Training complete!")
     logger.info("Getting accuracy....")
-    get_accuracy(test_loader, trainer.model)
+    get_accuracy(test_loader, trainer.model, num_gpus)
 
 
-def get_accuracy(test_loader, model):
+def get_accuracy(test_loader, model, num_gpus):
     model.eval()
     correct_sum = 0
     # Use GPU to evaluate if possible
-    device = torch.device("cuda:0" if model.num_gpus > 0
+    device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
     with torch.no_grad():
         for i, (data, target) in enumerate(test_loader):
@@ -263,6 +270,11 @@ if __name__ == '__main__':
         default="29500",
         help="""Port that master is listening on, will default to 29500 if not
         provided. Master must be able to accept network traffic on the host and port.""")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default="32",
+        help="""Batch size.""")
 
     args = parser.parse_args()
     assert args.rank is not None, "must provide rank argument."
@@ -272,7 +284,7 @@ if __name__ == '__main__':
     processes = []
     world_size = args.world_size
     
-    dataset = datasets.MNIST('../data', train=True, download=True, 
+    dataset = datasets.MNIST('../../data', train=True, download=True, 
                             transform=transforms.Compose([
                                 transforms.ToTensor(),
                                 transforms.Normalize((0.1307,), (0.3081,))
@@ -289,14 +301,14 @@ if __name__ == '__main__':
         processes.append(p)
     else:
         # Get data to train on
-        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=32, shuffle=False, sampler=train_sampler)
+        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=args.batch_size, shuffle=False, sampler=train_sampler)
         test_loader = torch.utils.data.DataLoader(
-            datasets.MNIST('../data', train=False,
+            datasets.MNIST('../../data', train=False,
                            transform=transforms.Compose([
                                transforms.ToTensor(),
                                transforms.Normalize((0.1307,), (0.3081,))
                            ])),
-            batch_size=32, shuffle=True)
+            batch_size=args.batch_size, shuffle=True)
         # start training worker on this node
         p = mp.Process(
             target=run_worker,

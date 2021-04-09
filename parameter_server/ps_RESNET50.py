@@ -16,6 +16,7 @@ from torch import optim
 from torch.distributed.optim import DistributedOptimizer
 from torchvision import datasets, transforms, models
 from torch import optim
+import math 
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
@@ -25,7 +26,7 @@ def timed_log(text):
 
 # Constants
 TRAINER_LOG_INTERVAL = 5  # How frequently to log information
-TERMINATE_AT_ITER = 1e10  # for early stopping when debugging
+TERMINATE_AT_ITER =1e10  # for early stopping when debugging
 PS_AVERAGE_EVERY_N = 25  # How often to average models between trainers
 
 # --------- ResNet50 Network to train-----
@@ -37,10 +38,11 @@ class ParameterServer(nn.Module):
         self.num_gpus = num_gpus
         self.world_size = world_size
         self.model = models.resnet50()
+        self.model = self.model.to('cpu')
         self.curr_update = 0
         self.future_model = torch.futures.Future()
         self.lock = Lock()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.03, momentum=0.9)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-5)
         for p in self.model.parameters():
             p.grad = torch.zeros_like(p)
 
@@ -114,28 +116,32 @@ class Trainer(nn.Module):
         self.rank = rank
         self.param_server_rref = rpc.remote(
             "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
-        device = torch.device("cuda:0" if num_gpus > 0
-            and torch.cuda.is_available() else "cpu")
         self.model = self.param_server_rref.rpc_sync().get_model()
+        device = torch.device("cuda" if num_gpus > 0
+                and torch.cuda.is_available() else "cpu")
+        if torch.cuda.device_count() > 1:
+            logger.info("Wrap model into DataParallel!")
+            self.model = nn.DataParallel(self.model, device_ids=[0,1])
         self.model = self.model.to(device)
 
-def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
+def run_training_loop(rank, world_size, num_gpus, batch_size, train_loader, test_loader):
     # Runs the typical neural network forward + backward + optimizer step, but
     # in a distributed fashion.
     trainer = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
     name = rpc.get_worker_info().name
-    device = torch.device("cuda:0" if num_gpus > 0
+    device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
-    # Build DistributedOptimizer.
-    # param_rrefs = net.get_global_param_rrefs()
     logger.info(f"Number of batchs {len(train_loader)}")
+    logger.info(f"Training on {device}")
     for i, (data, target) in enumerate(train_loader):
         if TERMINATE_AT_ITER is not None and i == TERMINATE_AT_ITER:
             break
         data = data.to(device)
         model_output = trainer.model(data)
         target = target.to(model_output.device)
-        loss = F.nll_loss(model_output, target)
+        loss = F.cross_entropy(model_output, target)
+        # Average gradients among sub-batches
+        loss.div_(math.ceil(float(len(data)) / batch_size))
         if i % TRAINER_LOG_INTERVAL == 0:
             logger.info(f"Rank {rank} training batch {i} loss {loss.item()}")
         loss.backward()
@@ -144,6 +150,9 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
                 ParameterServer.update_and_fetch_model,
                 args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
         )
+        if torch.cuda.device_count() > 1:
+            logger.info("Wrap model into DataParallel!")
+            trainer.model = nn.DataParallel(trainer.model,device_ids=[0,1])
         trainer.model = trainer.model.to(device)
 
         timed_log(f"{name} got updated model")
@@ -154,17 +163,21 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
 
     logger.info("Training complete!")
     logger.info("Getting accuracy....")
-    get_accuracy(test_loader, trainer.model)
+    get_accuracy(test_loader, trainer.model, num_gpus)
 
 
-def get_accuracy(test_loader, model):
+def get_accuracy(test_loader, model, num_gpus):
     model.eval()
     correct_sum = 0
     # Use GPU to evaluate if possible
-    device = torch.device("cuda:0" if model.num_gpus > 0
+    device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
+    logger.info(f"Evaluating on {device}")
+    logger.info(f"Number of evaluate batchs {len(test_loader)}")
     with torch.no_grad():
         for i, (data, target) in enumerate(test_loader):
+            if i % TRAINER_LOG_INTERVAL == 0:
+                logger.info(f"Evaluating batch {i}")
             data = data.to(device)
             out = model(data)
             pred = out.argmax(dim=1, keepdim=True)
@@ -175,7 +188,7 @@ def get_accuracy(test_loader, model):
     logger.info(f"Accuracy {correct_sum / len(test_loader.dataset)}")
 
 # Main loop for trainers.
-def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
+def run_worker(rank, world_size, num_gpus, batch_size, train_loader, test_loader):
     logger.info(f"Worker rank {rank} initializing RPC")    
     rpc.init_rpc(
         name=f"trainer_{rank}",
@@ -183,7 +196,7 @@ def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
         world_size=world_size)
 
     logger.info(f"Worker {rank} done initializing RPC")
-    run_training_loop(rank, world_size, num_gpus, train_loader, test_loader)
+    run_training_loop(rank, world_size, num_gpus, batch_size, train_loader, test_loader)
     rpc.shutdown()
 
 # --------- Launcher --------------------
@@ -222,6 +235,11 @@ if __name__ == '__main__':
         default="29500",
         help="""Port that master is listening on, will default to 29500 if not
         provided. Master must be able to accept network traffic on the host and port.""")
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default="32",
+        help="""Batch size.""")
 
     args = parser.parse_args()
     assert args.rank is not None, "must provide rank argument."
@@ -231,7 +249,7 @@ if __name__ == '__main__':
     processes = []
     world_size = args.world_size
     
-    dataset = datasets.CIFAR100('../data', train=True, download=True,
+    dataset = datasets.CIFAR100('../../data', train=True, download=True,
                             transform=transforms.Compose([
                              transforms.RandomResizedCrop(224),
                              transforms.RandomHorizontalFlip(),
@@ -251,9 +269,9 @@ if __name__ == '__main__':
         processes.append(p)
     else:
         # Get data to train on
-        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=32, shuffle=False, sampler=train_sampler)
+        train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=args.batch_size, shuffle=False, sampler=train_sampler)
         test_loader = torch.utils.data.DataLoader(
-            datasets.CIFAR100('../data', train=False,
+            datasets.CIFAR100('../../data', train=False,
                            transform=transforms.Compose([
                              transforms.Resize(256),
                              transforms.CenterCrop(224),
@@ -261,13 +279,13 @@ if __name__ == '__main__':
                              transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                   std=[0.229, 0.224, 0.225])
                            ])),
-            batch_size=32, shuffle=True)
+            batch_size=args.batch_size, shuffle=True)
         # start training worker on this node
         p = mp.Process(
             target=run_worker,
             args=(
                 args.rank,
-                world_size, args.num_gpus,
+                world_size, args.num_gpus, args.batch_size,
                 train_loader,
                 test_loader))
         p.start()
