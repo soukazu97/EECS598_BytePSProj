@@ -24,10 +24,10 @@ module load singularity
 
 # If only want run 10 minutes, add "timeout 10m"
 # Monitor cpu usage, put into a log file
-timeout 15m top -b -d 0.1 | grep $(username) | grep python3 > /home/$(username)/EECS598_BytePSProj/parameter_server/logs/ps_RES50_server.txt &
+timeout 15m top -b -d 0.1 | grep $(username) | grep python3 > /home/$(username)/EECS598_BytePSProj/parameter_server/logs/ps_RES152_server.txt &
 
 # Run the server node
 singularity exec --nv /home/$(username)/EECS598_BytePSProj/psimage.simg \
-python3 /home/$(username)/EECS598_BytePSProj/parameter_server/ps_RESNET50.py --world_size=3 --rank=0 \
+python3 /home/$(username)/EECS598_BytePSProj/parameter_server/ps_RESNET152.py --world_size=3 --rank=0 \
 --num_gpus=2 --master_addr=$(target_node) --master_port=7214 --batch_size=32
 

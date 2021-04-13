@@ -14,7 +14,7 @@
 #SBATCH --mem-per-cpu=32768m
 #SBATCH --partition=gpu
 #SBATCH --output=/home/%u/EECS598_BytePSProj/parameter_server/output/%x-%j.log
-#SBATCH --nodelist=gl1012
+#SBATCH --nodelist=gl1001
 
 # The application(s) to execute along with its input arguments and options:
 
@@ -24,10 +24,10 @@ module load singularity
 
 # If only want run 10 minutes, add "timeout 10m"
 # Monitor cpu usage, put into a log file
-timeout 15m top -b -d 0.1 | grep zwq | grep python3 > /home/zwq/EECS598_BytePSProj/parameter_server/logs/ps_RES50_server.txt &
+timeout 15m top -b -d 0.1 | grep zwq | grep python3 > /home/zwq/EECS598_BytePSProj/parameter_server/logs/ps_RES152_server.txt &
 
 # Run the server node
 singularity exec --nv /home/zwq/EECS598_BytePSProj/psimage.simg \
-python3 /home/zwq/EECS598_BytePSProj/parameter_server/ps_RESNET50.py --world_size=3 --rank=0 \
---num_gpus=2 --master_addr=gl1012 --master_port=7214 --batch_size=32
+python3 /home/zwq/EECS598_BytePSProj/parameter_server/ps_RESNET152.py --world_size=3 --rank=0 \
+--num_gpus=2 --master_addr=gl1001 --master_port=7214 --batch_size=32
 
