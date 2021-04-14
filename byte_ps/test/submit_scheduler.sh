@@ -11,5 +11,5 @@
 #SBATCH --account=eecs598s009w21_class
 #SBATCH --time=5:00:00
 # Scheduler properties
-#SBATCH --cpus-per-task=1 --nodes=1 --ntasks-per-node=1 --mem-per-cpu=4g --partition=standard --nodelist=gl3131 --ntasks=1
-srun singularity exec --nv /home/zwq/EECS598_BytePSProj/byte_ps/bytepsimage.simg /home/zwq/EECS598_BytePSProj/byte_ps/distributed_scripts/scheduler.sh
+#SBATCH --cpus-per-task=4 --nodes=1 --ntasks-per-node=1 --mem-per-cpu=8g --partition=standard --nodelist=gl3131 --ntasks=1
+srun singularity exec --nv /home/zwq/EECS598_BytePSProj/byteps_newtorch.simg /home/zwq/EECS598_BytePSProj/byte_ps/distributed_scripts/scheduler.sh
