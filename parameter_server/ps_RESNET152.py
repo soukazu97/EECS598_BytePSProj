@@ -37,7 +37,7 @@ class ParameterServer(nn.Module):
         super().__init__()
         self.num_gpus = num_gpus
         self.world_size = world_size
-        self.model = models.resnet50()
+        self.model = models.resnet152()
         self.model = self.model.to('cpu')
         self.curr_update = 0
         self.future_model = torch.futures.Future()
