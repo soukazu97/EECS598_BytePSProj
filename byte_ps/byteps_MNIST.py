@@ -49,7 +49,7 @@ kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
 #                        transforms.Normalize((0.1307,), (0.3081,))
 #                    ]))
 train_dataset = \
-    datasets.MNIST('你数据存哪儿', train=True, download=True,
+    datasets.MNIST('./data', train=True, download=True,
                    transform=transforms.Compose([
                        transforms.ToTensor(),
                        transforms.Normalize((0.1307,), (0.3081,))
@@ -66,7 +66,7 @@ train_loader = torch.utils.data.DataLoader(
 #         transforms.Normalize((0.1307,), (0.3081,))
 #     ]))
 test_dataset = \
-    datasets.MNIST('你数据存哪儿', train=False, transform=transforms.Compose([
+    datasets.MNIST('./data', train=False, transform=transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.1307,), (0.3081,))
     ]))
@@ -126,6 +126,7 @@ optimizer = bps.DistributedOptimizer(optimizer,
 # BytePS: broadcast parameters.
 bps.broadcast_parameters(model.state_dict(), root_rank=0)
 bps.broadcast_optimizer_state(optimizer, root_rank=0)
+
 
 def train(epoch):
     model.train()
