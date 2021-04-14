@@ -1,5 +1,4 @@
 *.simg
-byteps
 data
 parameter_server/errors/*
 parameter_server/output/*
