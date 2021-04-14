@@ -89,7 +89,7 @@ log_writer = tensorboardX.SummaryWriter(
 
 kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
 train_dataset = \
-    datasets.CIFAR100('./data', train=True, download=True,
+    datasets.CIFAR100('../data', train=True, download=True,
                       transform=transforms.Compose([
                           transforms.RandomCrop(32, padding=4),
                           transforms.RandomHorizontalFlip(),
@@ -107,7 +107,7 @@ train_loader = torch.utils.data.DataLoader(
     sampler=train_sampler, **kwargs)
 
 val_dataset = \
-    datasets.CIFAR100('./data', train=False,
+    datasets.CIFAR100('../data', train=False,
                       transform=transforms.Compose([
                           transforms.ToTensor(),
                           transforms.Normalize(mean=[0.485, 0.456, 0.406],
