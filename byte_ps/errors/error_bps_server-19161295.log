@@ -1,0 +1,4 @@
+INFO:    Could not find any nv files on this host!
+[01:38:10] byteps/server/server.cc:339: BytePS server engine uses 4 threads, consider increasing BYTEPS_SERVER_ENGINE_THREAD for higher performance
+[01:38:10] src/./zmq_van.h:287: Start ZMQ recv thread
+slurmstepd: error: *** JOB 19161295 ON gl3057 CANCELLED AT 2021-04-14T01:38:41 ***

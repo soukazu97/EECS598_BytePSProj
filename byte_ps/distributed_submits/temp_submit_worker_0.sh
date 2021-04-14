@@ -10,7 +10,7 @@
 #SBATCH --gpus-per-node=2
 #SBATCH --mem-per-cpu=16000m 
 #SBATCH --partition=gpu
-#SBATCH --nodelist=gl1005
+#SBATCH --nodelist=gl1006
 
 #SBATCH --account=eecs598s009w21_class
 #SBATCH --error=/home/%u/EECS598_BytePSProj/byte_ps/errors/error_%x-%j.log

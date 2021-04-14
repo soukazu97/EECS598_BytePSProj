@@ -19,11 +19,6 @@
 # Server properties
 #SBATCH --cpus-per-task=1 --nodes=1 --ntasks-per-node=1 --mem-per-cpu=4g --partition=standard --ntasks=1
 
-#SBATCH hetjob
-
-# Worker 0 properties
-#SBATCH --cpus-per-task=1 --nodes=1 --ntasks-per-node=1 --gpus-per-node=1 --mem-per-cpu=4g --partition=gpu --ntasks=1
-
 # Run scheduler
 srun --het-group=0 singularity exec --nv /home/jianbinz/EECS598_BytePSProj/byte_ps/bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/byte_ps/distributed_scripts/scheduler.sh
 sleep 60
@@ -33,7 +28,8 @@ srun --het-group=1 top -b -d 0.5 | grep jianbinz | grep python3 > /home/jianbinz
 srun --het-group=1 singularity exec --nv /home/jianbinz/EECS598_BytePSProj/byte_ps/bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/byte_ps/distributed_scripts/server.sh
 sleep 60
 
-# Run worker
-srun --het-group=2 top -b -d 0.1 | grep jianbinz | grep python3 > /home/jianbinz/EECS598_BytePSProj/byte_ps/test/logs/byteps_worker_0.txt &
-srun --het-group=2 singularity exec --nv /home/jianbinz/EECS598_BytePSProj/byte_ps/bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/byte_ps/distributed_scripts/worker_0.sh
-sleep 60
+# # Run worker
+# srun --het-group=2 module load singularity
+# srun --het-group=2 top -b -d 0.1 | grep jianbinz | grep python3 > /home/jianbinz/EECS598_BytePSProj/byte_ps/test/logs/byteps_worker_0.txt &
+# srun --het-group=2 singularity exec --nv /home/jianbinz/EECS598_BytePSProj/byte_ps/bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/byte_ps/distributed_scripts/worker_0.sh
+# sleep 60
