@@ -12,4 +12,4 @@ export DMLC_NUM_SERVER=1
 export DMLC_PS_ROOT_URI=10.164.8.181
 export DMLC_PS_ROOT_PORT=7214
 
-bpslaunch python3 /usr/local/byteps/example/pytorch/benchmark_byteps.py --model resnet50 --num-iters 100
+bpslaunch python3 /home/zwq/EECS598_BytePSProj/byte_ps/byteps_MNIST.py --batch-size 32 --epochs 3 
