@@ -12,7 +12,6 @@
 #SBATCH --mem-per-cpu=32768m 
 #SBATCH --partition=gpu
 #SBATCH --output=/home/%u/%x-%j.log
-#SBATCH --nodelist=${target_node}
 
 # The application(s) to execute along with its input arguments and options:
 # module load cuda/10.0.130
@@ -21,7 +20,7 @@ srun hostname -s
 
 module load singularity
 
-singularity exec --nv bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/byteps.sh
+singularity exec --nv /home/jianbinz/EECS598_BytePSProj/bytepsimage.simg /home/jianbinz/EECS598_BytePSProj/single_machine/test.sh
 
 /bin/hostname
 sleep 60

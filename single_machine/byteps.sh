@@ -12,4 +12,9 @@ export DMLC_NUM_SERVER=1
 export DMLC_PS_ROOT_URI=15.0.0.3
 export DMLC_PS_ROOT_PORT=7214
 
-bpslaunch python3 /usr/local/byteps/example/pytorch/benchmark_byteps.py --model resnet50 --num-iters 100
+pip3 install psrecord
+export PATH=$PATH:~/.local/bin
+
+psrecord "bpslaunch python3 /usr/local/byteps/example/pytorch/benchmark_byteps.py --model resnet50 --num-iters 100" --log activity.txt --plot plot.png
+
+#psrecord "bpslaunch python3 /usr/local/byteps/example/pytorch/benchmark_byteps.py --model resnet50 --num-iters 100" --log activity.txt --plot plot.png
