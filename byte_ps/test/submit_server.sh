@@ -12,5 +12,5 @@
 #SBATCH --time=5:00:00
 # Server properties
 #SBATCH --cpus-per-task=4 --nodes=1 --ntasks-per-node=1 --mem-per-cpu=8g --partition=standard --ntasks=1
-srun timeout 20m top -b -d 0.5 | grep zwq | grep bpslaunch > /home/zwq/EECS598_BytePSProj/byte_ps/test/logs/byteps_server_0.txt &
+top -b -d 0.5 | grep zwq | grep python3 > /home/zwq/EECS598_BytePSProj/byte_ps/test/logs/byteps_res150_server_0.txt &
 srun singularity exec --nv /home/zwq/EECS598_BytePSProj/byteps_newtorch.simg /home/zwq/EECS598_BytePSProj/byte_ps/distributed_scripts/server.sh

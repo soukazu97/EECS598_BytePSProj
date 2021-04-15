@@ -156,7 +156,7 @@ class Trainer(nn.Module):
             "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
         device = torch.device("cuda" if num_gpus > 0
             and torch.cuda.is_available() else "cpu")
-        self.model = self.param_server_rref.rpc_sync(timeout=86400).get_model()
+        self.model = self.param_server_rref.rpc_sync().get_model()
         if torch.cuda.device_count() > 1:
             # logger.info("Wrap model into DataParallel!")
             self.model = nn.DataParallel(self.model,device_ids=[0,1])

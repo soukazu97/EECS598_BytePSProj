@@ -8,10 +8,8 @@ import torch.optim as optim
 import torch.utils.data.distributed
 from torchvision import datasets, transforms, models
 import byteps.torch as bps
-import tensorboardX
 import os
 import math
-from tqdm import tqdm
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Example',
@@ -83,7 +81,7 @@ for try_epoch in range(args.epochs, 0, -1):
 verbose = 1 if bps.rank() == 0 else 0
 
 # BytePS: write TensorBoard logs on first worker.
-log_writer = tensorboardX.SummaryWriter(args.log_dir) if bps.rank() == 0 else None
+# log_writer = tensorboardX.SummaryWriter(args.log_dir) if bps.rank() == 0 else None
 
 
 kwargs = {'num_workers': 4, 'pin_memory': True} if args.cuda else {}
@@ -159,31 +157,28 @@ def train(epoch):
     train_loss = Metric('train_loss')
     train_accuracy = Metric('train_accuracy')
 
-    with tqdm(total=len(train_loader),
-              desc='Train Epoch     #{}'.format(epoch + 1),
-              disable=not verbose) as t:
-        for batch_idx, (data, target) in enumerate(train_loader):
-            adjust_learning_rate(epoch, batch_idx)
+    # with (total=len(train_loader), desc='Train Epoch   #{}'.format(epoch + 1), disable=not verbose) as t:
+    for batch_idx, (data, target) in enumerate(train_loader):
+        adjust_learning_rate(epoch, batch_idx)
 
-            if args.cuda:
-                data, target = data.cuda(), target.cuda()
-            optimizer.zero_grad()
-            # Split data into sub-batches of size batch_size
-            for i in range(0, len(data), args.batch_size):
-                data_batch = data[i:i + args.batch_size]
-                target_batch = target[i:i + args.batch_size]
-                output = model(data_batch)
-                train_accuracy.update(accuracy(output, target_batch))
-                loss = F.cross_entropy(output, target_batch)
-                train_loss.update(loss.item())
-                # Average gradients among sub-batches
-                loss.div_(math.ceil(float(len(data)) / args.batch_size))
-                loss.backward()
-            # Gradient is applied across all ranks
-            optimizer.step()
-            t.set_postfix({'loss': train_loss.avg.item(),
-                           'accuracy': 100. * train_accuracy.avg.item()})
-            t.update(1)
+        if args.cuda:
+            data, target = data.cuda(), target.cuda()
+        optimizer.zero_grad()
+        # Split data into sub-batches of size batch_size
+        for i in range(0, len(data), args.batch_size):
+            data_batch = data[i:i + args.batch_size]
+            target_batch = target[i:i + args.batch_size]
+            output = model(data_batch)
+            train_accuracy.update(accuracy(output, target_batch))
+            loss = F.cross_entropy(output, target_batch)
+            train_loss.update(loss.item())
+            # Average gradients among sub-batches
+            loss.div_(math.ceil(float(len(data)) / args.batch_size))
+            loss.backward()
+        # Gradient is applied across all ranks
+        optimizer.step()
+        print('loss: {:.4f}, accuracy: {:.4f}'.format(train_loss.avg.item(), 100.* train_accuracy.avg.item()))
+            # t.update(1)
 
     if log_writer:
         log_writer.add_scalar('train/loss', train_loss.avg, epoch)
@@ -195,20 +190,20 @@ def validate(epoch):
     val_loss = Metric('val_loss')
     val_accuracy = Metric('val_accuracy')
 
-    with tqdm(total=len(val_loader),
-              desc='Validate Epoch  #{}'.format(epoch + 1),
-              disable=not verbose) as t:
-        with torch.no_grad():
-            for data, target in val_loader:
-                if args.cuda:
-                    data, target = data.cuda(), target.cuda()
-                output = model(data)
+# with (total=len(val_loader), desc='Validate Epoch  #{}'.format(epoch + 1), disable=not verbose) as t:
+    with torch.no_grad():
+        for data, target in val_loader:
+            if args.cuda:
+                data, target = data.cuda(), target.cuda()
+            output = model(data)
 
-                val_loss.update(F.cross_entropy(output, target))
-                val_accuracy.update(accuracy(output, target))
-                t.set_postfix({'loss': val_loss.avg.item(),
-                               'accuracy': 100. * val_accuracy.avg.item()})
-                t.update(1)
+            val_loss.update(F.cross_entropy(output, target))
+            val_accuracy.update(accuracy(output, target))
+            print('loss: {:.4f}, accuracy: {:.4f}'.format(val_loss.avg.item(), 100.* val_accuracy.avg.item()))
+
+            # t.set_postfix({'loss': val_loss.avg.item(),
+            #                'accuracy': 100. * val_accuracy.avg.item()})
+            # t.update(1)
 
     if log_writer:
         log_writer.add_scalar('val/loss', val_loss.avg, epoch)
