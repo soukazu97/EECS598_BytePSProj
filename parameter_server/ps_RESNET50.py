@@ -251,11 +251,12 @@ if __name__ == '__main__':
     
     dataset = datasets.CIFAR100('../../data', train=True, download=True,
                             transform=transforms.Compose([
-                             transforms.RandomResizedCrop(224),
-                             transforms.RandomHorizontalFlip(),
-                             transforms.ToTensor(),
-                             transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                  std=[0.229, 0.224, 0.225])
+                                transforms.RandomCrop(32, padding=4),
+                                transforms.RandomHorizontalFlip(),
+                                transforms.RandomRotation(15),
+                                transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])
                             ]))
     if(args.rank != 0):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -272,13 +273,11 @@ if __name__ == '__main__':
         train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=args.batch_size, shuffle=False, sampler=train_sampler)
         test_loader = torch.utils.data.DataLoader(
             datasets.CIFAR100('../../data', train=False,
-                           transform=transforms.Compose([
-                             transforms.Resize(256),
-                             transforms.CenterCrop(224),
-                             transforms.ToTensor(),
-                             transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                                  std=[0.229, 0.224, 0.225])
-                           ])),
+                            transform=transforms.Compose([
+                                transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])
+                            ])),
             batch_size=args.batch_size, shuffle=True)
         # start training worker on this node
         p = mp.Process(

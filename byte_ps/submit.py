@@ -3,16 +3,19 @@ import re
 import os
 import random
 
-scheduler_file_name = 'temp_submit_scheduler.sh'
-server_file_name = 'temp_submit_server.sh'
-first_worker_file_name = 'temp_submit_worker_0.sh'
-second_worker_file_name = 'temp_submit_worker_1.sh'
+scheduler_file_name = 'distributed_submits/temp_submit_scheduler.sh'
+server_file_name = 'distributed_submits/temp_submit_server.sh'
+first_worker_file_name = 'distributed_submits/temp_submit_worker_0.sh'
+second_worker_file_name = 'distributed_submits/temp_submit_worker_1.sh'
 
 # Delete exsiting submit submit scripts
 os.system('rm ' + first_worker_file_name)
 os.system('rm ' + second_worker_file_name)
 os.system('rm ' + scheduler_file_name)
 os.system('rm ' + server_file_name)
+os.system('rm ./errors/*')
+os.system('rm ./output/*')
+os.system('rm ./logs/*')
 
 # Get the name of the user
 proc = Popen(['whoami'], stdout=PIPE, stderr=PIPE)
@@ -23,21 +26,30 @@ username = o.decode('ascii').strip()
 cmd = ['sinfo', '-p', 'gpu']
 proc = Popen(cmd, stdout=PIPE, stderr=PIPE)
 o, _ = proc.communicate()
-output = o.decode('ascii')
-print(output)
+original_output = o.decode('ascii')
+print(original_output)
 
 # Find the idle gpu machines
-output = output[output.find('idle'):].strip()  # idle gl[number, number-number]
-output = output[output.find('['):]  # [number, number-number]
-output = output[1:-1]  # number, number-number
+# idle gl[number, number-number]
+idle = original_output[original_output.find('idle'):].strip()
+idle = idle[idle.find('['):]  # [number, number-number]
+# idle = idle[1:-1]  # number, number-number
+idle = idle[idle.find('[')+1:idle.find(']')]
+
+mix = original_output[original_output.find('mix'):].strip()
+mix = mix[mix.find('['):].strip()  # [number, number-number]
+# mix = mix[1:-1]  # number, number-number
+mix = mix[mix.find('[')+1:mix.find(']')]
+
+nodes = idle
 
 candidates = []
 # Check if there are enough idle gpu machines
-if len(output) == 0:
-    print("There are not enough idle gpu machines!")
-    exit(1)
+if len(idle) < 5:
+    print("There are not enough idle gpu machines! Switching to using mix nodes now!")
+    nodes = mix
 
-entries = output.split(',')
+entries = nodes.split(',')
 for each in entries:
     if '-' in each:
         begin, end = each.split('-')
@@ -48,24 +60,24 @@ for each in entries:
         candidates.append("gl" + each)
 first_idle_node, second_idle_node = sorted(random.sample(candidates, 2))
 
-print("Found two idle gpu machine nodes: {} and {}\n".format(
+print("Found two gpu machine nodes: {} and {}\n".format(
     first_idle_node, second_idle_node))
 
 # Create new temporary submit scripts
 # Schduler
-with open("submit_scheduler_base.sh", 'r') as base_file:
+with open("distributed_submits/submit_scheduler_base.sh", 'r') as base_file:
     new_file_data = base_file.read().replace('$(username)', username)
     with open(scheduler_file_name, 'w') as new_file:
         new_file.write(new_file_data)
 
 # Server
-with open("submit_server_base.sh", 'r') as base_file:
+with open("distributed_submits/submit_server_base.sh", 'r') as base_file:
     new_file_data = base_file.read().replace('$(username)', username)
     with open(server_file_name, 'w') as new_file:
         new_file.write(new_file_data)
 
 # Workers
-with open("submit_worker_base.sh", 'r') as base_file:
+with open("distributed_submits/submit_worker_base.sh", 'r') as base_file:
     base_worker_file_data = base_file.read()
 
     first_submit_worker_script = base_worker_file_data.replace('$(worker_number)', '0').replace(
@@ -120,4 +132,3 @@ if o:
     print("Submitted second worker job: ", o.decode('ascii'))
 if e:
     print("Error submitting second worker job", e.decode('ascii'))
-

@@ -14,9 +14,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 from torch.distributed.optim import DistributedOptimizer
-from torchvision import datasets, transforms
+from torchvision import datasets, transforms, models
 from torch import optim
-import math
+import math 
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
 logger = logging.getLogger()
@@ -26,46 +26,10 @@ def timed_log(text):
 
 # Constants
 TRAINER_LOG_INTERVAL = 5  # How frequently to log information
-TERMINATE_AT_ITER = 1e10  # for early stopping when debugging
+TERMINATE_AT_ITER =1e10  # for early stopping when debugging
 PS_AVERAGE_EVERY_N = 25  # How often to average models between trainers
 
-# --------- MNIST Network to train, from pytorch/examples -----
-
-
-class Net(nn.Module):
-    def __init__(self, num_gpus=0):
-        super(Net, self).__init__()
-        logger.info(f"Using {num_gpus} GPUs to train")
-        self.num_gpus = num_gpus
-        # device = torch.device(
-        #     "cuda:0" if (torch.cuda.is_available() and self.num_gpus > 0) else "cpu")
-        device = torch.device("cpu")
-        logger.info(f"Putting model on {str(device)}")
-        self.conv1 = nn.Conv2d(1, 32, 3, 1).to(device)
-        self.conv2 = nn.Conv2d(32, 64, 3, 1).to(device)
-        self.dropout1 = nn.Dropout2d(0.25).to(device)
-        self.dropout2 = nn.Dropout2d(0.5).to(device)
-        self.fc1 = nn.Linear(9216, 128).to(device)
-        self.fc2 = nn.Linear(128, 10).to(device)
-
-    def forward(self, x):
-        input_size = x.size()
-        x = self.conv1(x)
-        x = F.relu(x)
-        x = self.conv2(x)
-        x = F.max_pool2d(x, 2)
-
-        x = self.dropout1(x)
-        x = torch.flatten(x, 1)
-
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.dropout2(x)
-        x = self.fc2(x)
-        output = F.log_softmax(x, dim=1)
-        # logger.info(f"Who is running this forward???  {str(self.rank)}")
-        # logger.info(f"In Model: input size {input_size} output size {output.size()}")
-        return output
+# --------- ResNet50 Network to train-----
 
 # --------- Parameter Server --------------------
 class ParameterServer(nn.Module):
@@ -73,11 +37,12 @@ class ParameterServer(nn.Module):
         super().__init__()
         self.num_gpus = num_gpus
         self.world_size = world_size
-        self.model = Net(num_gpus)
+        self.model = models.resnet152()
+        self.model = self.model.to('cpu')
         self.curr_update = 0
         self.future_model = torch.futures.Future()
         self.lock = Lock()
-        self.optimizer = optim.SGD(self.model.parameters(), lr=0.03, momentum=0.9)
+        self.optimizer = optim.SGD(self.model.parameters(), lr=0.1, momentum=0.9, weight_decay=1e-5)
         for p in self.model.parameters():
             p.grad = torch.zeros_like(p)
 
@@ -112,7 +77,6 @@ class ParameterServer(nn.Module):
                 # their responses will be sent accordingly.
                 fut.set_result(self.model)
                 self.future_model = torch.futures.Future()
-        logger.info("Return updated models to trainers.")
         return fut
 
 param_server = None
@@ -135,9 +99,7 @@ def run_parameter_server(rank, world_size):
     # in this case means that the parameter server will wait for all trainers
     # to complete, and then exit.
     logger.info("PS master initializing RPC")
-    rpc.init_rpc(name="parameter_server", rank=rank, world_size=world_size, 
-                 rpc_backend_options=rpc.TensorPipeRpcBackendOptions(rpc_timeout=86400)
-                )
+    rpc.init_rpc(name="parameter_server", rank=rank, world_size=world_size)
     logger.info("RPC initialized! Running parameter server...")
     rpc.shutdown()
     logger.info("RPC shutdown on parameter server.")
@@ -154,32 +116,32 @@ class Trainer(nn.Module):
         self.rank = rank
         self.param_server_rref = rpc.remote(
             "parameter_server", get_parameter_server, args=(self.rank, num_gpus, world_size))
-        device = torch.device("cuda" if num_gpus > 0
-            and torch.cuda.is_available() else "cpu")
         self.model = self.param_server_rref.rpc_sync().get_model()
+        device = torch.device("cuda" if num_gpus > 0
+                and torch.cuda.is_available() else "cpu")
         if torch.cuda.device_count() > 1:
-            # logger.info("Wrap model into DataParallel!")
-            self.model = nn.DataParallel(self.model,device_ids=[0,1])
+            logger.info("Wrap model into DataParallel!")
+            self.model = nn.DataParallel(self.model, device_ids=[0,1])
         self.model = self.model.to(device)
 
-def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
+def run_training_loop(rank, world_size, num_gpus, batch_size, train_loader, test_loader):
     # Runs the typical neural network forward + backward + optimizer step, but
     # in a distributed fashion.
     trainer = Trainer(rank=rank, num_gpus=num_gpus, world_size=world_size)
     name = rpc.get_worker_info().name
     device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
-    # Build DistributedOptimizer.
-    # param_rrefs = net.get_global_param_rrefs()
     logger.info(f"Number of batchs {len(train_loader)}")
+    logger.info(f"Training on {device}")
     for i, (data, target) in enumerate(train_loader):
         if TERMINATE_AT_ITER is not None and i == TERMINATE_AT_ITER:
             break
         data = data.to(device)
         model_output = trainer.model(data)
-        # logger.info(f"Out Model: input size {data.size()} output size {model_output.size()}")
         target = target.to(model_output.device)
-        loss = F.nll_loss(model_output, target)
+        loss = F.cross_entropy(model_output, target)
+        # Average gradients among sub-batches
+        loss.div_(math.ceil(float(len(data)) / batch_size))
         if i % TRAINER_LOG_INTERVAL == 0:
             logger.info(f"Rank {rank} training batch {i} loss {loss.item()}")
         loss.backward()
@@ -187,10 +149,9 @@ def run_training_loop(rank, world_size, num_gpus, train_loader, test_loader):
                 trainer.param_server_rref.owner(),
                 ParameterServer.update_and_fetch_model,
                 args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
-                timeout=86400
         )
         if torch.cuda.device_count() > 1:
-            # logger.info("Wrap model into DataParallel!")
+            logger.info("Wrap model into DataParallel!")
             trainer.model = nn.DataParallel(trainer.model,device_ids=[0,1])
         trainer.model = trainer.model.to(device)
 
@@ -211,8 +172,12 @@ def get_accuracy(test_loader, model, num_gpus):
     # Use GPU to evaluate if possible
     device = torch.device("cuda" if num_gpus > 0
         and torch.cuda.is_available() else "cpu")
+    logger.info(f"Evaluating on {device}")
+    logger.info(f"Number of evaluate batchs {len(test_loader)}")
     with torch.no_grad():
         for i, (data, target) in enumerate(test_loader):
+            if i % TRAINER_LOG_INTERVAL == 0:
+                logger.info(f"Evaluating batch {i}")
             data = data.to(device)
             out = model(data)
             pred = out.argmax(dim=1, keepdim=True)
@@ -223,7 +188,7 @@ def get_accuracy(test_loader, model, num_gpus):
     logger.info(f"Accuracy {correct_sum / len(test_loader.dataset)}")
 
 # Main loop for trainers.
-def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
+def run_worker(rank, world_size, num_gpus, batch_size, train_loader, test_loader):
     logger.info(f"Worker rank {rank} initializing RPC")    
     rpc.init_rpc(
         name=f"trainer_{rank}",
@@ -231,7 +196,7 @@ def run_worker(rank, world_size, num_gpus, train_loader, test_loader):
         world_size=world_size)
 
     logger.info(f"Worker {rank} done initializing RPC")
-    run_training_loop(rank, world_size, num_gpus, train_loader, test_loader)
+    run_training_loop(rank, world_size, num_gpus, batch_size, train_loader, test_loader)
     rpc.shutdown()
 
 # --------- Launcher --------------------
@@ -284,10 +249,14 @@ if __name__ == '__main__':
     processes = []
     world_size = args.world_size
     
-    dataset = datasets.MNIST('../../data', train=True, download=True, 
+    dataset = datasets.CIFAR100('../../data', train=True, download=True,
                             transform=transforms.Compose([
+                                transforms.RandomCrop(32, padding=4),
+                                transforms.RandomHorizontalFlip(),
+                                transforms.RandomRotation(15),
                                 transforms.ToTensor(),
-                                transforms.Normalize((0.1307,), (0.3081,))
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])
                             ]))
     if(args.rank != 0):
         train_sampler = torch.utils.data.distributed.DistributedSampler(
@@ -303,18 +272,19 @@ if __name__ == '__main__':
         # Get data to train on
         train_loader = torch.utils.data.DataLoader(dataset=dataset,batch_size=args.batch_size, shuffle=False, sampler=train_sampler)
         test_loader = torch.utils.data.DataLoader(
-            datasets.MNIST('../../data', train=False,
-                           transform=transforms.Compose([
-                               transforms.ToTensor(),
-                               transforms.Normalize((0.1307,), (0.3081,))
-                           ])),
+            datasets.CIFAR100('../../data', train=False,
+                            transform=transforms.Compose([
+                                transforms.ToTensor(),
+                                transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                    std=[0.229, 0.224, 0.225])
+                            ])),
             batch_size=args.batch_size, shuffle=True)
         # start training worker on this node
         p = mp.Process(
             target=run_worker,
             args=(
                 args.rank,
-                world_size, args.num_gpus,
+                world_size, args.num_gpus, args.batch_size,
                 train_loader,
                 test_loader))
         p.start()
