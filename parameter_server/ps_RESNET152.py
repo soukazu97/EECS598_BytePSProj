@@ -99,7 +99,8 @@ def run_parameter_server(rank, world_size):
     # in this case means that the parameter server will wait for all trainers
     # to complete, and then exit.
     logger.info("PS master initializing RPC")
-    rpc.init_rpc(name="parameter_server", rank=rank, world_size=world_size)
+    rpc.init_rpc(name="parameter_server", rank=rank, world_size=world_size,
+                rpc_backend_options=rpc.TensorPipeRpcBackendOptions(rpc_timeout=86400))
     logger.info("RPC initialized! Running parameter server...")
     rpc.shutdown()
     logger.info("RPC shutdown on parameter server.")
@@ -149,6 +150,7 @@ def run_training_loop(rank, world_size, num_gpus, batch_size, train_loader, test
                 trainer.param_server_rref.owner(),
                 ParameterServer.update_and_fetch_model,
                 args=(trainer.param_server_rref, [p.grad for p in trainer.model.cpu().parameters()]),
+                timeout=86400
         )
         if torch.cuda.device_count() > 1:
             logger.info("Wrap model into DataParallel!")
@@ -251,9 +253,8 @@ if __name__ == '__main__':
     
     dataset = datasets.CIFAR100('../../data', train=True, download=True,
                             transform=transforms.Compose([
-                                transforms.RandomCrop(32, padding=4),
+                                transforms.RandomResizedCrop(224),
                                 transforms.RandomHorizontalFlip(),
-                                transforms.RandomRotation(15),
                                 transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                     std=[0.229, 0.224, 0.225])
@@ -274,6 +275,8 @@ if __name__ == '__main__':
         test_loader = torch.utils.data.DataLoader(
             datasets.CIFAR100('../../data', train=False,
                             transform=transforms.Compose([
+                                transforms.Resize(256),
+                                transforms.CenterCrop(224),
                                 transforms.ToTensor(),
                                 transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                                     std=[0.229, 0.224, 0.225])
